@@ -1,0 +1,49 @@
+---
+name: tdd-ci
+description: Use once a slice is built and green locally and its unit plus end-to-end (Playwright) tests should run automatically in Continuous Integration. Phase 3 of the TDD harness — it detects the stack and writes a correct GitHub Actions workflow (installing Playwright browsers and uploading the report, screenshots, and videos as artifacts), validates it, and commits it. Trigger on 'add a GitHub Actions workflow', 'set up CI', 'run the tests on every PR', 'wire up continuous integration', or 'make these a required check'. Run after red-green-refactor and before safe-pr.
+---
+
+# TDD CI — Promote Tests to GitHub Actions (Phase 3)
+
+Once a slice is green locally, make its tests run automatically in CI. This is the enterprise step that turns "passes on my machine" into "the team's main branch is protected by these tests." Keep it a deliberate, separate phase: CI config is infrastructure and deserves its own review.
+
+For the anatomy of a workflow, caching, Playwright-in-CI specifics, and branch-protection guidance, read `references/github-actions-guide.md`. Ready-to-customise templates are in `assets/workflows/`.
+
+> Confirm exact, current `actions/*` versions and runner images with `find-docs`/`ctx7` — action major versions move.
+
+## Preconditions
+
+- The slice's full suite (unit + e2e) passes **locally** first. Do not promote red or unrun tests to CI.
+- A git remote on GitHub exists (`git remote -v`). If not, tell the user CI will only take effect once the repo is pushed to GitHub; still write the workflow so it's ready.
+
+## Procedure
+
+1. **Detect the stack and test commands.** Reuse the detection from `red-green-refactor`'s `references/test-strategy.md`: the unit runner + command, and whether there's a Playwright e2e suite. Use the project's own scripts (`package.json`, `Makefile`) as the source of truth for how tests are invoked.
+
+2. **Choose a template** from `assets/workflows/`:
+   - `node-ci.yml` — Node/TS unit tests (Vitest/Jest) + build.
+   - `python-ci.yml` — Python unit tests (pytest).
+   - `playwright-e2e.yml` — end-to-end job: installs browsers with `--with-deps`, runs Playwright, **uploads `playwright-report/` and `test-results/`** (the screenshots and videos) as artifacts.
+   - Combine the unit template with the Playwright template, or merge into one workflow with two jobs. Most slices want **both** a unit job and an e2e job.
+
+3. **Customise it** to the real project: correct Node/Python version, the actual install + test commands, the e2e start command / `webServer`, and the trigger (push to any branch + `pull_request` targeting `main`). Remove anything that doesn't apply. Don't leave template placeholders behind.
+
+4. **Write** the file to `.github/workflows/` with a clear name (e.g. `ci.yml`, or `unit.yml` + `e2e.yml`). Keep unit and e2e as separate jobs (or files) so a reviewer sees both signals distinctly.
+
+5. **Validate.** Check the YAML parses and the syntax is sound (a YAML lint, or `gh workflow view` / `actionlint` if available). Sanity-check that the commands match how the tests actually run locally. If `act` is installed and the user wants a local dry-run, offer it — otherwise validation is static.
+
+6. **Record & commit.** Note the workflow file in the slice plan's Definition-of-Done. Commit with `ci: add GitHub Actions workflow running unit + e2e tests [slice NN]`. **Confirm before pushing** — pushing is outward-facing; `safe-pr` will handle the push as part of opening the PR, so you can leave the commit local and hand off.
+
+7. **Branch protection (advise, don't impose).** Tell the user they can make these checks *required* on `main` via the repo's branch-protection rules so PRs can't merge red. Offer the `gh api` command from the guide if they want it set up, but treat changing repo settings as something to confirm explicitly.
+
+## What "good CI for a slice" looks like
+
+- Runs on **push** (fast feedback) and on **pull_request → main** (the gate).
+- A **unit job** and an **e2e job**, each reporting its own status check.
+- Playwright job installs browsers with `--with-deps`, runs headless, and **uploads the HTML report + screenshots + videos** as artifacts even on failure (`if: always()` / `if: ${{ !cancelled() }}`) so reviewers and `safe-pr` can reference them.
+- Dependency caching so the pipeline is fast.
+- No secrets committed; environment via repo/Actions secrets.
+
+## Hand-off
+
+Once the workflow is committed and valid, recommend `safe-pr` to open the pull request — it will push the branch (triggering this workflow) and assemble the evidence-rich PR. If running under `tdd-harness`, return to the orchestrator.

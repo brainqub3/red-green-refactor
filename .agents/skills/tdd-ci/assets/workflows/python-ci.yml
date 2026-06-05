@@ -1,0 +1,32 @@
+# Template: Python unit tests with pytest.
+# Customise: Python version, dependency install (requirements.txt / pyproject / poetry), and the test command.
+# Verify action versions with find-docs/ctx7 before committing.
+name: Unit
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit:
+    name: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"     # set to the project's supported version
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # ^ Replace the single line above with the ONE that matches the project:
+          #     pip install -e ".[test]"
+          #     poetry install --with dev
+
+      - name: Run unit tests
+        run: pytest -q

@@ -1,0 +1,14 @@
+# Dependencies
+node_modules/
+
+# TDD harness transient artifacts
+# Playwright output (evidence is copied into docs/tdd-evidence/ by safe-pr; raw output stays local)
+test-results/
+playwright-report/
+
+# safe-pr generated PR bodies
+PR_BODY.md
+PR_BODY.generated.md
+
+# safe-cleanup recovery log (local record of deleted branch SHAs)
+.tdd-branch-cleanup.log
