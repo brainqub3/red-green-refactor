@@ -1,0 +1,11 @@
+
+ RUN  v3.2.6 C:/Users/johna/OneDrive/Documents/Brainqub3/red-green-refactor/brainqub3-rg-refactor/sandbox/cli-calculator
+
+ ✓ test/add.test.js (2 tests) 4ms
+ ✓ test/cli.integration.test.js (1 test) 90ms
+
+ Test Files  2 passed (2)
+      Tests  3 passed (3)
+   Start at  22:46:05
+   Duration  785ms (transform 77ms, setup 0ms, collect 63ms, tests 94ms, environment 1ms, prepare 624ms)
+
