@@ -1,0 +1,31 @@
+# CI for the cli-adder smoke-test app (Node + Vitest), which lives in a subdirectory.
+# run: steps execute in the project dir; cache-dependency-path is repo-root-relative.
+name: cli-adder
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+defaults:
+  run:
+    working-directory: sandbox/cli-adder
+
+jobs:
+  unit:
+    name: unit + integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: sandbox/cli-adder/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests (unit + CLI integration)
+        run: npm test
