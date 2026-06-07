@@ -1,6 +1,6 @@
 ---
 name: tdd-ci
-description: Use once a slice is built and green locally and its unit plus end-to-end (Playwright) tests should run automatically in Continuous Integration. Phase 3 of the TDD harness — it detects the stack and writes a correct GitHub Actions workflow (installing Playwright browsers and uploading the report, screenshots, and videos as artifacts), validates it, and commits it. Trigger on 'add a GitHub Actions workflow', 'set up CI', 'run the tests on every PR', 'wire up continuous integration', or 'make these a required check'. Run after red-green-refactor and before safe-pr.
+description: Use once a slice is built and green locally and its unit plus acceptance tests (end-to-end Playwright for web, or integration tests for CLI and API slices) should run automatically in Continuous Integration. Phase 3 of the TDD harness — it detects the stack and the project directory and writes a correct GitHub Actions workflow (for web slices installing Playwright browsers and uploading the report, screenshots, and videos as artifacts; for non-web slices running the integration test; handling subdirectory apps via working-directory), validates it, and commits it. Trigger on 'add a GitHub Actions workflow', 'set up CI', 'run the tests on every PR', 'wire up continuous integration', or 'make these a required check'. Run after red-green-refactor and before safe-pr.
 ---
 
 # TDD CI — Promote Tests to GitHub Actions (Phase 3)
@@ -18,15 +18,17 @@ For the anatomy of a workflow, caching, Playwright-in-CI specifics, and branch-p
 
 ## Procedure
 
-1. **Detect the stack and test commands.** Reuse the detection from `red-green-refactor`'s `references/test-strategy.md`: the unit runner + command, and whether there's a Playwright e2e suite. Use the project's own scripts (`package.json`, `Makefile`) as the source of truth for how tests are invoked.
+1. **Detect the stack, the project directory, and the test commands.** Reuse the detection from `red-green-refactor`'s `references/test-strategy.md`: the unit runner + command, and whether the outer loop is a **Playwright e2e suite (web)** or an **integration test (CLI / HTTP API / service)**. Read the plan's **Project directory** field — if the app lives in a subfolder, the workflow must run there (see step 3). Use the project's own scripts (`package.json`, `Makefile`) as the source of truth for how tests are invoked.
 
 2. **Choose a template** from `assets/workflows/`:
    - `node-ci.yml` — Node/TS unit tests (Vitest/Jest) + build.
    - `python-ci.yml` — Python unit tests (pytest).
-   - `playwright-e2e.yml` — end-to-end job: installs browsers with `--with-deps`, runs Playwright, **uploads `playwright-report/` and `test-results/`** (the screenshots and videos) as artifacts.
-   - Combine the unit template with the Playwright template, or merge into one workflow with two jobs. Most slices want **both** a unit job and an e2e job.
+   - `playwright-e2e.yml` — **web** end-to-end job: installs browsers with `--with-deps`, runs Playwright, **uploads `playwright-report/` and `test-results/`** (the screenshots and videos) as artifacts.
+   - Combine the unit template with the Playwright template, or merge into one workflow with two jobs. A **web** slice wants **both** a unit job and an e2e job. A **non-web** slice (CLI / API / service) skips the Playwright template entirely — its integration test is just another test run (often the same `npm test` / `pytest -q` as the unit job, no browser steps); see the guide's "Non-web slices in CI" section.
 
-3. **Customise it** to the real project: correct Node/Python version, the actual install + test commands, the e2e start command / `webServer`, and the trigger (push to any branch + `pull_request` targeting `main`). Remove anything that doesn't apply. Don't leave template placeholders behind.
+3. **Customise it** to the real project: correct Node/Python version, the actual install + test commands, the e2e start command / `webServer` (web only), and the trigger (push to any branch + `pull_request` targeting `main`). Remove anything that doesn't apply. Don't leave template placeholders behind.
+
+   **If the app is in a subdirectory** (plan's *Project directory* ≠ `.`): set `defaults.run.working-directory` to that path so `run:` steps execute there, and — because `uses:` actions resolve from the repo root — prefix the subfolder on `cache-dependency-path` and on any `upload-artifact` `path:`. The templates carry inline comments showing both; the guide's "Projects in a subdirectory" section explains why. Keep the test command identical to what ran locally from that directory.
 
 4. **Write** the file to `.github/workflows/` with a clear name (e.g. `ci.yml`, or `unit.yml` + `e2e.yml`). Keep unit and e2e as separate jobs (or files) so a reviewer sees both signals distinctly.
 
@@ -39,8 +41,9 @@ For the anatomy of a workflow, caching, Playwright-in-CI specifics, and branch-p
 ## What "good CI for a slice" looks like
 
 - Runs on **push** (fast feedback) and on **pull_request → main** (the gate).
-- A **unit job** and an **e2e job**, each reporting its own status check.
-- Playwright job installs browsers with `--with-deps`, runs headless, and **uploads the HTML report + screenshots + videos** as artifacts even on failure (`if: always()` / `if: ${{ !cancelled() }}`) so reviewers and `safe-pr` can reference them.
+- A **unit job** and an **acceptance job**, each reporting its own status check (a non-web slice may run both in one job if you don't need separate checks).
+- For a **web** slice, the Playwright job installs browsers with `--with-deps`, runs headless, and **uploads the HTML report + screenshots + videos** as artifacts even on failure (`if: always()` / `if: ${{ !cancelled() }}`) so reviewers and `safe-pr` can reference them. A **non-web** slice runs its integration test with no browser steps, uploading any captured report/log if useful.
+- Correct **working-directory** + repo-root-relative `cache-dependency-path`/artifact paths when the app is in a subdirectory.
 - Dependency caching so the pipeline is fast.
 - No secrets committed; environment via repo/Actions secrets.
 

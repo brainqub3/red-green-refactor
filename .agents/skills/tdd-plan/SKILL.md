@@ -17,6 +17,8 @@ For the full slicing toolkit — vertical-vs-horizontal, INVEST, the walking ske
 
 2. **Detect the context.** Is this a brand-new system or a change to an existing one? Look at the repo (build tooling, existing tests, frameworks). If there is **no working build/test/deploy path yet**, the first slice must be a **walking skeleton**: the thinnest end-to-end thread that builds, runs, and is tested through real infrastructure — it de-risks architecture and CI before any real feature content.
 
+   Also note **where the app lives** relative to the repo root — the *project directory*. It is `.` for a single app at the root, or a subfolder for a monorepo package / `services/<x>` / a `sandbox/` smoke-test. Record it in every plan (see the template field): the later phases run install/test/build there and CI keys `working-directory` + `cache-dependency-path` off it. The git branch is always cut at the repo root regardless.
+
 3. **Slice vertically.** Decompose into an ordered list of slices, each cutting through all the layers it needs (UI → logic → persistence) to deliver one observable behaviour. **Never slice horizontally** (a "build the DB layer" slice has no independent value and can't be tested end-to-end — reject it). Use the splitting patterns in the guide. Order slices so the earliest ones de-risk the most and each builds on the last.
 
 4. **Validate every slice against INVEST** — Independent, Negotiable, Valuable, Estimable, Small, Testable. If a slice isn't Small and Testable, split it again. If it has no discernible value, drop it. Aim for slices a developer could finish in well under a day.

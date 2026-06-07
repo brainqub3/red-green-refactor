@@ -100,6 +100,7 @@ test('user resets password and logs in', async ({ page }) => {
 
 ## 5. Running the loops in practice
 
+- **Project directory:** run all install/test/build commands from the plan's **Project directory** — the folder holding the app's package manifest and tests (`.` at the repo root, or a subfolder for a monorepo package / `services/<x>` / a `sandbox/` app). The git branch is still cut at the repo root, and evidence still lands under the repo-root `docs/tdd-evidence/`. Only the run commands change directory. This same path is what `tdd-ci` turns into the workflow's `working-directory` + `cache-dependency-path`.
 - **Inner loop:** run just the unit test(s) for the behaviour under development for a fast red→green→refactor rhythm (e.g. `npx vitest run path/to/file` or `pytest path::test`). Run the **full unit suite** before each commit.
 - **Outer loop:** run the single acceptance spec (`npx playwright test e2e/<slice>.spec.ts`) to check progress; run the **whole** e2e suite before closing the slice.
 - **Full green check:** before committing the slice, run both suites end to end.

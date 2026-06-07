@@ -58,10 +58,11 @@ or step through it manually:
 ## Conventions (shared by all skills)
 
 - **Plans:** `plans/<feature-slug>/README.md` (index/status board) + `plans/<feature-slug>/<NN>-<slice-slug>.md` (one execution plan per slice — the contract every phase reads and updates).
+- **Project directory:** the path from the repo root where the app + its package manifest/tests live — `.` at the root, or a subfolder for a monorepo package / `services/<x>` / a `sandbox/` app. Recorded in the plan; all phases run install/test/build there and CI sets `working-directory` + `cache-dependency-path` accordingly. The git branch is always cut at the repo root.
 - **Branches:** one per slice — `feat/<feature-slug>/<NN>-<slice-slug>`, cut from an up-to-date `main`.
-- **Evidence:** `docs/tdd-evidence/<feature-slug>/<NN>-<slice-slug>/` (committed on the feature branch).
+- **Evidence:** `docs/tdd-evidence/<feature-slug>/<NN>-<slice-slug>/` (committed on the feature branch). Web slices store Playwright screenshots/recordings; non-web slices store terminal transcripts (test run + real endpoint invocation).
 - **Commits:** small, green-only, Conventional Commits (`test:`, `feat:`, `refactor:`, `ci:`).
-- **Testing:** stack-agnostic. The harness detects the project's unit runner (Vitest/Jest/pytest/go test/…) at runtime and uses **Playwright** for end-to-end web tests (configured to capture screenshots + video + trace for PR evidence). Non-web slices use integration tests through the real endpoint (HTTP/CLI/queue).
+- **Testing:** stack-agnostic. The harness detects the project's unit runner (Vitest/Jest/pytest/go test/…) at runtime and uses **Playwright** for end-to-end web tests (configured to capture screenshots + video + trace for PR evidence). Non-web slices use integration tests through the real endpoint (HTTP/CLI/queue), captured as transcripts.
 
 ## Requirements
 
