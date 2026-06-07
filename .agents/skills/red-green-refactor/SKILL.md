@@ -17,7 +17,7 @@ A slice plan: `plans/<feature-slug>/<NN>-<slice-slug>.md`. If the user names a s
 
 1. **Read the plan.** Internalise the goal, the acceptance criterion (Given/When/Then), the seeded unit test list, and what's out of scope.
 2. **Cut the branch.** From an up-to-date `main`, create `feat/<feature-slug>/<NN>-<slice-slug>` (see `references/test-strategy.md` if unsure). Never develop a slice on `main`.
-3. **Detect test tooling.** Identify the unit runner and the e2e setup (see `references/test-strategy.md`). If Playwright (or a unit runner) is needed and absent, set it up now as part of the slice — a walking-skeleton slice exists precisely to establish this.
+3. **Detect test tooling.** Identify the unit runner and the e2e setup (see `references/test-strategy.md`). If Playwright (or a unit runner) is needed and absent, set it up now as part of the slice — a walking-skeleton slice exists precisely to establish this. Note the plan's **Project directory**: if the app lives in a subfolder, run install/test/build from there (the branch is still cut at the repo root). For a walking-skeleton slice, set the project directory up now and record it in the plan if the planner left it open.
 
 ## The OUTER loop (acceptance / e2e — the "are we done" signal)
 

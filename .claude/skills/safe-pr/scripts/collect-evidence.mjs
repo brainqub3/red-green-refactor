@@ -1,23 +1,39 @@
 #!/usr/bin/env node
 /**
- * collect-evidence.mjs — gather Playwright test artifacts into a committed evidence folder
- * and render a Markdown evidence block (screenshots embedded, recordings/report/traces linked)
- * for a TDD-harness pull request.
+ * collect-evidence.mjs — gather test evidence into a committed evidence folder and render a
+ * Markdown evidence block for a TDD-harness pull request.
+ *
+ * Two modalities — the harness builds web apps AND non-web apps (CLI / HTTP API / service):
+ *   • web     — Playwright artifacts: screenshots embedded, recordings/report/traces linked.
+ *   • generic — terminal transcripts (the test-run output + a real endpoint invocation such as
+ *               CLI stdout or an HTTP request/response) copied in and embedded as fenced code
+ *               blocks. No browser required.
+ *
+ * The modality is auto-detected (Playwright artifacts present → web; otherwise, if transcripts
+ * are supplied → generic) and can be forced with --type web|cli|api|service|generic.
  *
  * Cross-platform (Windows/macOS/Linux). Requires Node 18+ and a git repo.
  *
- * Usage:
+ * Usage (web):
  *   node collect-evidence.mjs --feature <slug> --slice <NN-slug> \
  *        [--report-dir playwright-report] [--results-dir test-results] \
  *        [--template path/to/pr-body-template.md] [--out PR_BODY.md] \
  *        [--max-screenshots 12] [--include-traces] [--force]
  *
+ * Usage (non-web — pass one or more captured transcripts; --transcript is repeatable):
+ *   node collect-evidence.mjs --feature <slug> --slice <NN-slug> --type cli \
+ *        --transcript test-run.txt --transcript cli-demo.txt \
+ *        [--transcript-dir some/dir] [--max-transcript-lines 200] \
+ *        [--template path/to/pr-body-template.md] [--out PR_BODY.md] [--force]
+ *
+ * A web slice may also pass --transcript to attach extra command output alongside the screenshots.
+ *
  * Safety:
  *   - By default RAW traces (*.zip) and HAR captures (*.har) are NOT copied into the committed
  *     evidence (they routinely contain auth tokens / cookies). Opt in with --include-traces.
- *   - Copied text artifacts are scanned for likely secrets; if any match, the script prints a
- *     loud "SECRETS SUSPECTED" report so the human reviews BEFORE committing. It never echoes the
- *     matched secret value, only the file and which pattern matched.
+ *   - Copied text artifacts (including transcripts) are scanned for likely secrets; if any match,
+ *     the script prints a loud "SECRETS SUSPECTED" report so the human reviews BEFORE committing.
+ *     It never echoes the matched secret value, only the file and which pattern matched.
  *   - Inline image URLs are pinned to the current commit SHA (via raw.githubusercontent.com) so
  *     they keep rendering even after the branch is deleted on merge.
  *   - --out is never silently clobbered: if the target exists, output goes to <name>.generated.md
@@ -30,16 +46,33 @@ import path from 'node:path';
 
 function parseArgs(argv) {
   const args = {};
+  const add = (key, value) => {
+    if (key in args) args[key] = [].concat(args[key], value); // repeated flag → array
+    else args[key] = value;
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
       const key = a.slice(2);
       const next = argv[i + 1];
-      if (next === undefined || next.startsWith('--')) { args[key] = true; }
-      else { args[key] = next; i++; }
+      if (next === undefined || next.startsWith('--')) { add(key, true); }
+      else { add(key, next); i++; }
     }
   }
   return args;
+}
+
+/** Coerce a possibly-repeated flag value into a list of string values. */
+function asList(v) {
+  if (v === undefined) return [];
+  return [].concat(v).filter((x) => typeof x === 'string');
+}
+
+/** Map a free-form --type onto 'web' | 'generic'. Unknown / non-browser kinds → 'generic'. */
+function normalizeType(t) {
+  if (!t || t === true) return null;
+  const s = String(t).toLowerCase();
+  return ['web', 'browser', 'playwright', 'e2e', 'ui'].includes(s) ? 'web' : 'generic';
 }
 
 function sh(cmd) {
@@ -107,17 +140,22 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   const feature = args.feature;
   const slice = args.slice;
-  if (!feature || !slice) {
+  if (!feature || !slice || feature === true || slice === true) {
     console.error('ERROR: --feature <slug> and --slice <NN-slug> are required.');
     process.exit(1);
   }
 
-  const reportDir = args['report-dir'] || 'playwright-report';
-  const resultsDir = args['results-dir'] || 'test-results';
+  const reportDir = (typeof args['report-dir'] === 'string' && args['report-dir']) || 'playwright-report';
+  const resultsDir = (typeof args['results-dir'] === 'string' && args['results-dir']) || 'test-results';
   const maxShots = parseInt(args['max-screenshots'] || '12', 10);
+  const maxTranscriptLines = parseInt(args['max-transcript-lines'] || '200', 10);
   const includeTraces = !!args['include-traces'];
   const force = !!args.force;
-  let outFile = args.out || 'PR_BODY.md';
+  let outFile = (typeof args.out === 'string' && args.out) || 'PR_BODY.md';
+
+  const explicitType = normalizeType(args.type);
+  const transcriptInputs = asList(args.transcript);
+  const transcriptDir = typeof args['transcript-dir'] === 'string' ? args['transcript-dir'] : null;
 
   const repoRoot = sh('git rev-parse --show-toplevel') || process.cwd();
   const branch = sh('git rev-parse --abbrev-ref HEAD');
@@ -138,18 +176,40 @@ function main() {
   const destAbs = path.join(repoRoot, destRel);
   fs.mkdirSync(destAbs, { recursive: true });
 
-  // Copy report + results into the committed evidence folder.
+  // Decide modality. Playwright artifacts win; otherwise transcripts mean a non-web slice.
+  const reportAbs = path.isAbsolute(reportDir) ? reportDir : path.join(repoRoot, reportDir);
+  const resultsAbs = path.isAbsolute(resultsDir) ? resultsDir : path.join(repoRoot, resultsDir);
+  const hasPwArtifacts = fs.existsSync(reportAbs) || fs.existsSync(resultsAbs);
+  const type = explicitType
+    || (hasPwArtifacts ? 'web' : ((transcriptInputs.length || transcriptDir) ? 'generic' : 'web'));
+
+  // Copy Playwright report + results into the committed evidence folder (if present).
   const copied = [];
-  for (const [src, name] of [[reportDir, 'playwright-report'], [resultsDir, 'test-results']]) {
-    const srcAbs = path.isAbsolute(src) ? src : path.join(repoRoot, src);
+  for (const [srcAbs, name] of [[reportAbs, 'playwright-report'], [resultsAbs, 'test-results']]) {
     if (fs.existsSync(srcAbs)) {
       fs.cpSync(srcAbs, path.join(destAbs, name), { recursive: true });
       copied.push(name);
     }
   }
-  if (copied.length === 0) {
-    console.warn(`WARN: neither "${reportDir}" nor "${resultsDir}" exist. Run the Playwright suite first so there are artifacts to collect.`);
+  if (type === 'web' && copied.length === 0) {
+    console.warn(`WARN: neither "${reportDir}" nor "${resultsDir}" exist. Run the Playwright suite first so there are artifacts to collect (or pass --type cli/api with --transcript for a non-web slice).`);
   }
+
+  // Copy transcripts (non-web evidence, or extra command output for a web slice).
+  const transcriptFiles = [];
+  const addTranscript = (srcAbs) => {
+    if (!fs.existsSync(srcAbs)) { console.warn(`WARN: transcript not found, skipping: ${srcAbs}`); return; }
+    if (fs.statSync(srcAbs).isDirectory()) return;
+    const dest = path.join(destAbs, path.basename(srcAbs));
+    if (path.resolve(srcAbs) !== path.resolve(dest)) fs.cpSync(srcAbs, dest);
+    if (!transcriptFiles.includes(dest)) transcriptFiles.push(dest);
+  };
+  for (const t of transcriptInputs) addTranscript(path.isAbsolute(t) ? t : path.join(process.cwd(), t));
+  if (transcriptDir) {
+    const dirAbs = path.isAbsolute(transcriptDir) ? transcriptDir : path.join(process.cwd(), transcriptDir);
+    for (const f of walk(dirAbs)) addTranscript(f);
+  }
+  transcriptFiles.sort();
 
   // Safety: by default drop raw traces (.zip) and HAR captures (.har) from the committed copy.
   let droppedSensitive = 0;
@@ -167,7 +227,7 @@ function main() {
   const traces = files.filter(isTrace).sort();
   const reportIndex = files.find(f => /playwright-report[\\/].*index\.html$/i.test(f));
 
-  // Secret scan over the committed text artifacts.
+  // Secret scan over the committed text artifacts (transcripts included).
   const secretHits = scanForSecrets(files);
 
   const rawUrl = (rel) => repo && ref ? `https://raw.githubusercontent.com/${repo.owner}/${repo.repo}/${ref}/${rel}` : rel;
@@ -175,48 +235,75 @@ function main() {
 
   // Build the Markdown evidence block.
   const lines = [];
-  lines.push('### Visual evidence');
-  lines.push('');
-  if (screenshots.length === 0) {
-    lines.push("_No screenshots found. Add `await page.screenshot(...)` at the decisive assertion in the acceptance spec, or set `screenshot: 'on'` in playwright.config._");
-  } else {
-    for (const s of screenshots.slice(0, maxShots)) {
-      const rel = toRepoUrlPath(s, repoRoot);
-      const label = path.basename(s);
-      lines.push(`**${label}**`, '', `![${label}](${rawUrl(rel)})`, '');
-    }
-    if (screenshots.length > maxShots) {
-      lines.push(`_…and ${screenshots.length - maxShots} more screenshot(s) in \`${destRel.split(path.sep).join('/')}/\`._`, '');
-    }
-  }
 
-  lines.push('### Recordings', '');
-  if (videos.length) {
-    lines.push('_Click to download and view the recording of the run:_', '');
-    for (const v of videos) lines.push(`- [${path.basename(v)}](${blobUrl(toRepoUrlPath(v, repoRoot))})`);
+  if (type === 'web') {
+    lines.push('### Visual evidence', '');
+    if (screenshots.length === 0) {
+      lines.push("_No screenshots found. Add `await page.screenshot(...)` at the decisive assertion in the acceptance spec, or set `screenshot: 'on'` in playwright.config._");
+    } else {
+      for (const s of screenshots.slice(0, maxShots)) {
+        const rel = toRepoUrlPath(s, repoRoot);
+        const label = path.basename(s);
+        lines.push(`**${label}**`, '', `![${label}](${rawUrl(rel)})`, '');
+      }
+      if (screenshots.length > maxShots) {
+        lines.push(`_…and ${screenshots.length - maxShots} more screenshot(s) in \`${destRel.split(path.sep).join('/')}/\`._`, '');
+      }
+    }
+
+    lines.push('### Recordings', '');
+    if (videos.length) {
+      lines.push('_Click to download and view the recording of the run:_', '');
+      for (const v of videos) lines.push(`- [${path.basename(v)}](${blobUrl(toRepoUrlPath(v, repoRoot))})`);
+      lines.push('');
+    } else {
+      lines.push('> ⚠️ **No recording was captured.** A web slice requires a video of the passing acceptance run. Set `video: \'on\'` for the acceptance project, re-run the e2e suite, and re-collect.', '');
+    }
+
+    lines.push('### Reports & traces', '');
+    if (reportIndex) {
+      const rel = toRepoUrlPath(reportIndex, repoRoot);
+      lines.push(`- Playwright HTML report: [\`${rel}\`](${blobUrl(rel)}) (also uploaded as a CI artifact — open locally with \`npx playwright show-report\`).`);
+    }
+    for (const t of traces) {
+      const rel = toRepoUrlPath(t, repoRoot);
+      lines.push(`- Trace: [${path.basename(t)}](${blobUrl(rel)}) — open with \`npx playwright show-trace <file>\`.`);
+    }
+    if (!includeTraces && droppedSensitive > 0) {
+      lines.push(`- _(${droppedSensitive} trace/HAR file(s) omitted from evidence for safety; re-run with \`--include-traces\` after checking them for secrets.)_`);
+    }
     lines.push('');
-  } else {
-    lines.push('> ⚠️ **No recording was captured.** The harness requires a video of the passing acceptance run. Set `video: \'on\'` for the acceptance project, re-run the e2e suite, and re-collect.', '');
   }
 
-  lines.push('### Reports & traces', '');
-  if (reportIndex) {
-    const rel = toRepoUrlPath(reportIndex, repoRoot);
-    lines.push(`- Playwright HTML report: [\`${rel}\`](${blobUrl(rel)}) (also uploaded as a CI artifact — open locally with \`npx playwright show-report\`).`);
+  // Transcripts — the primary evidence for non-web slices; supplementary for web.
+  if (transcriptFiles.length) {
+    lines.push('### Test output (transcripts)', '');
+    for (const tf of transcriptFiles) {
+      const rel = toRepoUrlPath(tf, repoRoot);
+      const label = path.basename(tf);
+      let content = '';
+      try { content = fs.readFileSync(tf, 'utf8'); } catch { /* binary or unreadable */ }
+      const allLines = content.replace(/\s+$/, '').split(/\r?\n/);
+      const shown = allLines.slice(0, maxTranscriptLines);
+      const truncated = allLines.length > maxTranscriptLines;
+      const fence = content.includes('```') ? '~~~' : '```'; // avoid breaking out of the code fence
+      const lang = /\.json$/i.test(tf) ? 'json' : '';
+      lines.push(`**${label}**`, '');
+      lines.push(fence + lang, ...shown, fence, '');
+      if (truncated) lines.push(`_…truncated to ${maxTranscriptLines} lines; full transcript (${allLines.length} lines): [\`${rel}\`](${blobUrl(rel)})._`, '');
+      else lines.push(`Full transcript: [\`${rel}\`](${blobUrl(rel)})`, '');
+    }
+  } else if (type !== 'web') {
+    lines.push('### Test output (transcripts)', '');
+    lines.push('> ⚠️ **No transcript captured.** For a non-web slice, capture the test-run output AND a real endpoint invocation (CLI stdout / HTTP request+response) to files and pass them with `--transcript <file>` (repeatable).', '');
   }
-  for (const t of traces) {
-    const rel = toRepoUrlPath(t, repoRoot);
-    lines.push(`- Trace: [${path.basename(t)}](${blobUrl(rel)}) — open with \`npx playwright show-trace <file>\`.`);
-  }
-  if (!includeTraces && droppedSensitive > 0) {
-    lines.push(`- _(${droppedSensitive} trace/HAR file(s) omitted from evidence for safety; re-run with \`--include-traces\` after checking them for secrets.)_`);
-  }
-  lines.push(`- All evidence committed under \`${destRel.split(path.sep).join('/')}/\`.`, '');
+
+  lines.push(`_All evidence committed under \`${destRel.split(path.sep).join('/')}/\`._`, '');
 
   const block = lines.join('\n');
 
   // Emit to file (never silently clobber).
-  const template = args.template;
+  const template = typeof args.template === 'string' ? args.template : null;
   if (template && fs.existsSync(template)) {
     let body = fs.readFileSync(template, 'utf8');
     body = body.includes('<!-- EVIDENCE -->') ? body.replace('<!-- EVIDENCE -->', block) : body + '\n\n' + block;
@@ -248,16 +335,20 @@ function main() {
   }
 
   console.log('\n----- SUMMARY -----');
+  console.log(`modality        : ${type}${explicitType ? ' (forced)' : ' (auto-detected)'}`);
   console.log(`evidence folder : ${destRel.split(path.sep).join('/')}/`);
-  console.log(`screenshots     : ${screenshots.length}`);
-  console.log(`recordings      : ${videos.length}${videos.length ? '' : '  <-- WARNING: harness requires a recording of the acceptance run'}`);
-  console.log(`traces          : ${traces.length}${includeTraces ? '' : ' (raw traces/HAR omitted; --include-traces to keep)'}`);
+  if (type === 'web') {
+    console.log(`screenshots     : ${screenshots.length}`);
+    console.log(`recordings      : ${videos.length}${videos.length ? '' : '  <-- WARNING: a web slice requires a recording of the acceptance run'}`);
+    console.log(`traces          : ${traces.length}${includeTraces ? '' : ' (raw traces/HAR omitted; --include-traces to keep)'}`);
+  }
+  console.log(`transcripts     : ${transcriptFiles.length}${type !== 'web' && transcriptFiles.length === 0 ? '  <-- WARNING: a non-web slice needs at least one transcript' : ''}`);
   console.log(`secrets         : ${secretHits.length ? secretHits.length + ' SUSPECTED — see report above' : 'none detected (still skim the evidence)'}`);
   console.log(`branch          : ${branch || '(unknown)'}`);
   console.log(`commit          : ${sha ? sha.slice(0, 12) : '(unknown)'}`);
   console.log(`repo            : ${repo ? repo.owner + '/' + repo.repo : '(no github.com remote)'}`);
   if (!repo || !branch || branch === 'HEAD') {
-    console.log('note            : push the feature branch to GitHub so embedded image URLs resolve.');
+    console.log('note            : push the feature branch to GitHub so embedded image/file URLs resolve.');
   }
 }
 

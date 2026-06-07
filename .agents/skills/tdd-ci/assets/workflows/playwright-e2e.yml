@@ -1,6 +1,14 @@
 # Template: Playwright end-to-end tests with evidence artifacts (report + screenshots + videos).
 # This is the job that produces the review evidence safe-pr links to.
 # Customise: Node version, install/build/start commands, and the BASE_URL / webServer config.
+#
+# PROJECT IN A SUBDIRECTORY? `defaults.run.working-directory` makes the `run:` steps (npm ci, playwright
+# test) execute in the app dir. BUT the `uses:` actions resolve paths from the REPO ROOT — so when the app
+# is in a subfolder you MUST prefix the subfolder on:
+#   • setup-node `cache-dependency-path`  (e.g. apps/web/package-lock.json)
+#   • upload-artifact `path:`              (e.g. apps/web/playwright-report/ and apps/web/test-results/)
+# If the app IS at the repo root, delete the `defaults:` block and drop the subfolder prefixes.
+#
 # Verify action versions with find-docs/ctx7 before committing.
 name: E2E
 
@@ -8,6 +16,10 @@ on:
   push:
   pull_request:
     branches: [main]
+
+defaults:
+  run:
+    working-directory: .            # <-- app dir from repo root, e.g. apps/web (delete this block if repo root)
 
 jobs:
   e2e:
@@ -21,6 +33,7 @@ jobs:
         with:
           node-version: 20
           cache: npm
+          cache-dependency-path: package-lock.json   # <-- repo-root-relative, e.g. apps/web/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -52,6 +65,7 @@ jobs:
           BASE_URL: http://localhost:3000   # match playwright.config webServer/baseURL
 
       # Upload the HTML report, screenshots and videos on pass OR fail so reviewers can inspect them.
+      # NOTE: these paths are REPO-ROOT-relative — prefix the subfolder if the app is in a subdirectory.
       - name: Upload Playwright evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4

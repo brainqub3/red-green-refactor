@@ -102,12 +102,50 @@ gh api -X DELETE repos/{owner}/{repo}/branches/main/protection                  
 
 `enforce_admins` is `false` here so a solo maintainer can't lock themselves out; set it to `true` only when the team wants admins held to the same gate. The example requires no approving reviews (`required_pull_request_reviews: null`) — add `{ "required_approving_review_count": 1 }` if the team wants mandatory review. Treat all of this as opt-in: it's an organisational policy decision, not something to apply unprompted.
 
-## 8. Checklist before committing a workflow
+## 8. Projects in a subdirectory (monorepo / sandbox)
+
+The harness builds apps that aren't always at the repo root — a monorepo package, a `services/<x>` dir, or a `sandbox/` app. The plan's **Project directory** field names that path. Map it into the workflow carefully, because two different path conventions are in play:
+
+- **`run:` steps** honour `defaults.run.working-directory` (set it once at the top of the workflow, or per-job). So `npm ci`, `npm test`, `pytest`, `npx playwright test` all execute in the app dir.
+- **`uses:` actions do NOT** honour `working-directory` — their path inputs resolve from the **repo root**. The ones that bite:
+  - `actions/setup-node` / `actions/setup-python` **`cache-dependency-path`** → must include the subfolder, e.g. `services/api/package-lock.json`. Without it the cache key is wrong (or the action errors that it found no lockfile).
+  - `actions/upload-artifact` **`path:`** → must include the subfolder, e.g. `apps/web/playwright-report/`. Otherwise the evidence upload silently captures nothing.
+
+```yaml
+defaults:
+  run:
+    working-directory: apps/web          # run: steps only
+jobs:
+  e2e:
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json   # repo-root-relative
+      - run: npm ci                                            # runs in apps/web
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          path: |
+            apps/web/playwright-report/                        # repo-root-relative
+            apps/web/test-results/
+```
+
+For a root-level app, omit `defaults:` and the subfolder prefixes entirely. Keep the workflow's test command identical to what `red-green-refactor` ran locally from the same project directory.
+
+## 9. Non-web (CLI / API / service) slices in CI
+
+Not every slice has a browser. When the slice's outer loop is an integration test (CLI subprocess, HTTP request against a started service, a consumed queue message) rather than Playwright:
+
+- The **e2e/acceptance job is just another test run** — no `playwright install`, no browser cache, no `webServer`. Often the unit and integration tests run under the same runner (`npm test`, `pytest -q`) in one job; split them into two jobs only if you want two distinct status checks.
+- There are **no screenshots/videos** to upload. If the integration test writes useful output (a JUnit/JSON report, a captured request/response log), upload that as the artifact instead, again with `if: ${{ !cancelled() }}`. `safe-pr` attaches captured terminal transcripts as the review evidence for these slices.
+
+## 10. Checklist before committing a workflow
 
 - [ ] Triggers include `pull_request` → `main`.
-- [ ] Unit job runs the **same** command the tests run locally.
-- [ ] e2e job installs browsers `--with-deps`, starts the app, runs Playwright.
-- [ ] Report + `test-results/` uploaded as artifacts with `if: ${{ !cancelled() }}`.
-- [ ] Dependency + browser caching configured.
+- [ ] Unit job runs the **same** command the tests run locally (from the project directory).
+- [ ] For a subdirectory app: `working-directory` set for `run:` steps, and `cache-dependency-path` + any `upload-artifact` `path:` prefixed with the subfolder (repo-root-relative).
+- [ ] Web slice: e2e job installs browsers `--with-deps`, starts the app, runs Playwright, uploads report + `test-results/` with `if: ${{ !cancelled() }}`. Non-web slice: integration test runs without browser steps.
+- [ ] Dependency (+ browser, for web) caching configured.
 - [ ] No placeholders, no secrets, correct runtime versions.
 - [ ] YAML validated (lint / `actionlint` / `gh workflow view`).

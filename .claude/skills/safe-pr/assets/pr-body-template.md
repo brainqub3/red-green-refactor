@@ -1,7 +1,9 @@
 <!--
-PR body template for the TDD harness. The collect-evidence.mjs script injects the embedded screenshots /
-recordings / report links at the EVIDENCE marker in the Test evidence section below (the lone HTML comment
-reading EVIDENCE). Fill every <placeholder> and delete this guidance comment.
+PR body template for the TDD harness. The collect-evidence.mjs script injects evidence at the EVIDENCE
+marker in the Test evidence section below (the lone HTML comment reading EVIDENCE): for a WEB slice that
+is embedded screenshots + recording/report links; for a NON-WEB slice (CLI / HTTP API / service) it is
+the captured terminal transcripts embedded as code blocks. Fill every <placeholder>, delete the branch of
+the "outer test" section that doesn't apply, and delete this guidance comment.
 -->
 
 ## Summary
@@ -30,7 +32,7 @@ Then  <observable outcome>
 ```
 
 - **Boundary exercised:** <URL / API route / CLI command>
-- **e2e spec:** `<path to spec>`
+- **Acceptance test:** `<path to spec — Playwright spec for web, or the integration/CLI test for non-web>`
 
 ## Test evidence
 
@@ -40,20 +42,25 @@ Then  <observable outcome>
 <paste the real unit-test run summary: framework, counts, pass/fail, duration>
 ```
 
-### End-to-end tests (outer loop)
+### Acceptance / end-to-end test (outer loop)
 
 ```
-<paste the real Playwright run summary: specs run, passed, duration>
+<paste the real outer-loop run summary — Playwright for web; the integration/CLI test run for non-web>
 ```
 
+<!--
+EVIDENCE block injected below by collect-evidence.mjs:
+  • web slice     → embedded screenshots + links to the recording and HTML report
+  • non-web slice → captured terminal transcripts (test run + real endpoint invocation) as code blocks
+-->
 <!-- EVIDENCE -->
 
 ## How to review
 
 1. <Start the app / where to look.>
 2. <The key behaviour to exercise.>
-3. Read the e2e spec `<path>` — it documents the intended behaviour end-to-end.
-4. CI runs the unit + e2e jobs on this PR; the Playwright report is also uploaded as a CI artifact.
+3. Read the acceptance test `<path>` — it documents the intended behaviour end-to-end.
+4. CI runs the unit + acceptance jobs on this PR (for web slices the Playwright report is also uploaded as a CI artifact).
 
 ## Reviewer checklist
 
@@ -62,7 +69,7 @@ Then  <observable outcome>
 - [ ] Unit + e2e suites are green locally and in CI.
 - [ ] Code was refactored on green (no obvious duplication, clear names).
 - [ ] Scope matches the slice — no gold-plating; deferred items are noted below.
-- [ ] Evidence (screenshots/recording) shows the feature actually working.
+- [ ] Evidence shows the feature actually working (screenshots + recording for web; test-run + real-invocation transcripts for non-web).
 
 ## Scope & risk
 

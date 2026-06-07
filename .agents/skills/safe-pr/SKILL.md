@@ -1,15 +1,19 @@
 ---
 name: safe-pr
-description: Use to open a safe, reviewable pull request from a feature branch into main once a slice is built with red-green-refactor and green. Phase 4 of the TDD harness. It assembles everything a reviewer needs — the feature and slice description, evidence of the tests that ran (unit summaries plus Playwright screenshots and recordings), a reviewer checklist, and a link to the plan — then pushes the branch and opens the PR with gh. Trigger on 'raise a PR', 'open a pull request', 'ship this slice', or 'create the PR with evidence'. Deliberately cautious — confirms before pushing, never force-pushes, only targets main.
+description: Use to open a safe, reviewable pull request from a feature branch into main once a slice is built with red-green-refactor and green. Phase 4 of the TDD harness. It assembles everything a reviewer needs — the feature and slice description, evidence of the tests that ran (unit summaries plus Playwright screenshots and recordings for web slices, or terminal transcripts for CLI and API slices), a reviewer checklist, and a link to the plan — then pushes the branch and opens the PR with gh. Trigger on 'raise a PR', 'open a pull request', 'ship this slice', or 'create the PR with evidence'. Deliberately cautious — confirms before pushing, never force-pushes, only targets main.
 ---
 
 # Safe PR — Evidence-Rich Pull Request (Phase 4)
 
 Open a pull request a senior engineer can approve with confidence, because the evidence is right there. This is the final phase of a slice: build (red-green-refactor) → CI (tdd-ci) → **PR**. Treat opening a PR as an outward-facing action — be careful and confirm before pushing.
 
+The harness builds **web and non-web** apps, so evidence comes in two shapes:
+- **Web slice** → Playwright **screenshots + a recording** of the passing acceptance run (plus the HTML report).
+- **Non-web slice** (CLI / HTTP API / service) → **terminal transcripts**: the test-run output *and* a real endpoint invocation (CLI stdout, or an HTTP request+response). Transcripts stand in for screenshots/recordings.
+
 Bundled resources:
 - `assets/pr-body-template.md` — the PR description structure (with an `<!-- EVIDENCE -->` marker the script fills).
-- `scripts/collect-evidence.mjs` — collects Playwright artifacts into the committed evidence folder and generates the PR body with embedded screenshots. Run with Node.
+- `scripts/collect-evidence.mjs` — collects evidence into the committed evidence folder and generates the PR body. For web slices it embeds screenshots and links the recording/report; for non-web slices (`--type cli|api|service` with `--transcript`) it embeds the transcripts as code blocks. Modality is auto-detected (Playwright artifacts → web) or forced with `--type`. Run with Node.
 
 > Requires the GitHub CLI (`gh`) authenticated, and a GitHub remote. Confirm both early (`gh auth status`, `git remote -v`).
 
@@ -22,15 +26,27 @@ Bundled resources:
 
 ## Procedure
 
-1. **Produce the evidence by actually running the tests.** Run the e2e suite with Playwright configured to capture **screenshots + video (`video: 'on'`) + HTML report** (see the `red-green-refactor` test-strategy reference). The PR must include a screenshot **and a recording** of the passing acceptance run — if none was produced, re-run with video on before continuing. Capture the unit-test summary output too (counts, pass/fail). Show *real* run output, not claims.
+1. **Produce the evidence by actually running the tests.** Show *real* run output, not claims. Always capture the unit-test summary (counts, pass/fail). Then, depending on the slice's boundary:
+   - **Web slice:** run the e2e suite with Playwright configured to capture **screenshots + video (`video: 'on'`) + HTML report** (see the `red-green-refactor` test-strategy reference). The PR must include a screenshot **and a recording** of the passing acceptance run — if none was produced, re-run with video on before continuing.
+   - **Non-web slice (CLI / API / service):** capture **two transcripts to files** — (a) the test-run output (e.g. `npm test` / `pytest -q`), and (b) a real invocation through the boundary (the CLI run with its stdout + exit code, or the HTTP request + response). Redirect them to files so the collector can attach them, e.g. `npm test > test-run.txt 2>&1` and `node src/cli.js 2 3 > cli-demo.txt 2>&1`.
 
-2. **Collect & render.** Run the evidence collector from the repo root. It is plain Node, so the **same single-line invocation works on Windows, macOS, and Linux**:
+   Run tests from the slice's **project directory** if the app lives in a subfolder (see the plan's *Project directory* field).
+
+2. **Collect & render.** Run the evidence collector from the repo root. It is plain Node, so the **same single-line invocation works on Windows, macOS, and Linux**. Pick the form for the slice:
+
+   **Web slice** (auto-detects the Playwright artifacts):
 
    ```
    node "${CLAUDE_SKILL_DIR}/scripts/collect-evidence.mjs" --feature <feature-slug> --slice <NN-slice-slug> --template "${CLAUDE_SKILL_DIR}/assets/pr-body-template.md" --out PR_BODY.md
    ```
 
-   It copies `playwright-report/` and `test-results/` into `docs/tdd-evidence/<feature>/<NN-slice>/`, finds the screenshots/videos/traces, scans the artifacts for likely secrets, and writes `PR_BODY.md` with the screenshots embedded (pinned to the commit SHA so they survive branch deletion) and the report/recordings linked. By default it omits raw traces and HAR files (which often carry auth tokens); pass `--include-traces` only if you need them and have checked them.
+   **Non-web slice** (`--type cli|api|service`, one or more `--transcript`):
+
+   ```
+   node "${CLAUDE_SKILL_DIR}/scripts/collect-evidence.mjs" --feature <feature-slug> --slice <NN-slice-slug> --type cli --transcript test-run.txt --transcript cli-demo.txt --template "${CLAUDE_SKILL_DIR}/assets/pr-body-template.md" --out PR_BODY.md
+   ```
+
+   It copies the artifacts into `docs/tdd-evidence/<feature>/<NN-slice>/` and writes `PR_BODY.md`. For web it embeds screenshots (pinned to the commit SHA so they survive branch deletion) and links the report/recording; for non-web it embeds each transcript as a fenced code block (capped with `--max-transcript-lines`, default 200) and links the full file. It scans every copied text artifact for likely secrets. By default it omits raw traces and HAR files (which often carry auth tokens); pass `--include-traces` only if you need them and have checked them.
 
 3. **Review the evidence for secrets — BEFORE committing anything.** Read the collector's output: if it reports `SECRETS SUSPECTED`, open the named files and remove or redact any tokens, cookies, passwords, or env dumps (Playwright traces, HAR captures, and HTML reports are the usual culprits). This evidence is about to be committed and pushed to a possibly public branch and **cannot be un-published once in history**. Do not proceed until it is clean. Add `test-results/` and `playwright-report/` to `.gitignore` so stray local artifacts aren't committed by accident.
 
@@ -73,4 +89,4 @@ Bundled resources:
 
 ## What the reviewer gets
 
-A PR whose description proves the slice works: the behaviour described in plain language, the failing-then-passing acceptance test, embedded screenshots of the feature working, links to the Playwright recording and HTML report, the unit-test summary, a checklist, and a link back to the execution plan. That is "everything a developer needs to review it and know the desired feature was built."
+A PR whose description proves the slice works: the behaviour described in plain language, the failing-then-passing acceptance test, the unit-test summary, a checklist, a link back to the execution plan, and **modality-appropriate evidence of it working** — embedded screenshots plus a linked recording and HTML report for a web slice, or the embedded test-run and real-invocation transcripts for a CLI/API/service slice. That is "everything a developer needs to review it and know the desired feature was built."

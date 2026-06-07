@@ -52,6 +52,7 @@ Each phase is its own skill. Invoke them in order via the **Skill** tool. Do not
 These are the single source of truth; the phase skills restate them briefly.
 
 - **Plans:** `plans/<feature-slug>/README.md` (index + status board) and `plans/<feature-slug>/<NN>-<slice-slug>.md` (one execution plan per slice). `<NN>` is a zero-padded order, e.g. `01`, `02`.
+- **Project directory:** the path from the repo root where the app + its package manifest/tests live (`.` at the root, or a subfolder for a monorepo package / `services/<x>` / a `sandbox/` app). `tdd-plan` records it in the plan; `red-green-refactor`, `tdd-ci`, and `safe-pr` run install/test/build from there, and CI sets `working-directory` + `cache-dependency-path` accordingly. The git branch is always cut at the repo root.
 - **Branches:** one feature branch per slice — `feat/<feature-slug>/<NN>-<slice-slug>` — cut from an up-to-date `main`.
 - **Evidence:** `docs/tdd-evidence/<feature-slug>/<NN>-<slice-slug>/` (committed on the feature branch; collected by `safe-pr`).
 - **Commits:** small, on green only. Conventional Commit style (`feat:`, `test:`, `refactor:`, `ci:`). Reference the slice, e.g. `feat(<feature-slug>): <slice goal> [slice NN]`.

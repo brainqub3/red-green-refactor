@@ -17,6 +17,7 @@ The **slice plan is the contract** shared across the whole harness: `red-green-r
 - **Created:** <YYYY-MM-DD>
 - **Status:** planning | in-progress | done
 - **New system?** yes (first slice is a walking skeleton) | no
+- **Project directory:** <path from the repo root where the app + its package manifest/tests live; `.` if the repo root itself. e.g. `.`, `services/api`, `sandbox/cli-calculator`. All phases run install/test/build from here; the git branch is still cut at the repo root.>
 
 ## Slices
 
@@ -48,6 +49,7 @@ Develop top to bottom. One slice = one red-green-refactor pass = one PR.
 - **Feature:** <feature-slug>
 - **Slice slug:** <slice-slug>
 - **Branch:** feat/<feature-slug>/<NN>-<slice-slug>
+- **Project directory:** <path from repo root where install/test/build run; `.` if repo root>
 - **Status:** ☐ todo | ◐ in-progress | ✅ done
 - **Walking skeleton?** yes | no
 
@@ -112,3 +114,4 @@ Seed for the inner red-green-refactor cycles. This is a **living list** — `red
 - **Keep the unit list short and concrete.** Three to six behaviours is typical for a thin slice. Don't try to enumerate everything — the loop discovers more.
 - **Out-of-scope is load-bearing.** Explicitly deferring things is what keeps the slice small and prevents gold-plating during development.
 - **One slice file per vertical slice.** If a file starts listing two unrelated behaviours, split it into two files and add a row to the README.
+- **Set the project directory.** If the app lives in a subfolder (a monorepo package, a `services/<x>` dir, a `sandbox/` smoke-test), record that path so `red-green-refactor`, `tdd-ci`, and `safe-pr` run install/test/build there and CI sets `working-directory` + `cache-dependency-path` correctly. Use `.` when the app is at the repo root. The git branch is always cut at the repo root regardless.
