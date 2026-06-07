@@ -51,7 +51,7 @@ Seed for the inner red-green-refactor cycles. Living list — add as design emer
 - [x] Acceptance/integration test written, seen to fail for the right reason, now GREEN.
 - [x] All seeded unit behaviours covered; full suite passes locally.
 - [x] Refactor pass complete (no duplication, clear names) with the bar green.
-- [ ] Slice's tests run in CI (`tdd-ci`).
+- [x] Slice's tests run in CI (`tdd-ci`) — `.github/workflows/cli-calculator.yml`.
 - [ ] Evidence collected and PR opened into `main` (`safe-pr`).
 
 ## Status / progress log
