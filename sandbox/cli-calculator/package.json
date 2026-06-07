@@ -1,0 +1,16 @@
+{
+  "name": "cli-calculator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tiny CLI calculator — TDD harness smoke-test",
+  "type": "module",
+  "bin": {
+    "cli-calculator": "src/cli.js"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  }
+}
