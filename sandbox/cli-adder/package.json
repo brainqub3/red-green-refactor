@@ -1,0 +1,16 @@
+{
+  "name": "cli-adder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tiny CLI adder — harness smoke-test (non-web)",
+  "type": "module",
+  "bin": {
+    "cli-adder": "src/cli.js"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  }
+}
