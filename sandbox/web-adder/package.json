@@ -1,0 +1,16 @@
+{
+  "name": "web-adder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tiny web adder — harness smoke-test (web modality)",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "vitest": "^3.0.0"
+  }
+}

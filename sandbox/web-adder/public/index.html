@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Web Adder</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem; }
+    label { display: block; margin: 0.5rem 0 0.25rem; }
+    input { font-size: 1rem; padding: 0.4rem; width: 8rem; }
+    button { font-size: 1rem; padding: 0.4rem 1rem; margin-top: 1rem; cursor: pointer; }
+    #result { font-size: 2rem; margin-top: 1.5rem; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>Web Adder</h1>
+
+  <label for="a">First number</label>
+  <input id="a" type="number" />
+
+  <label for="b">Second number</label>
+  <input id="b" type="number" />
+
+  <button id="add">Add</button>
+
+  <div id="result" data-testid="result"></div>
+
+  <script type="module">
+    import { add } from './add.js';
+    const $ = (id) => document.getElementById(id);
+    $('add').addEventListener('click', () => {
+      const sum = add(Number($('a').value), Number($('b').value));
+      $('result').textContent = String(sum);
+    });
+  </script>
+</body>
+</html>
