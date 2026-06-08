@@ -77,7 +77,14 @@ Bundled resources:
 
    Never target a base other than `main` unless the user explicitly asks.
 
-8. **Record the result.** Put the PR URL into the slice plan's status log and the feature README's slice table, and tick the Definition-of-Done. Report the URL to the user. Optionally note that CI is now running on the PR and they can require those checks before merge (see `tdd-ci`). Once the PR is merged, suggest running `safe-cleanup` to retire the now-stale local feature branch.
+8. **Record the result.** Put the PR URL into the slice plan's status log and the feature README's slice table, and tick the Definition-of-Done. Optionally note that CI is now running on the PR and they can require those checks before merge (see `tdd-ci`).
+
+9. **Report to the user (required — this is how branches stay tidy).** End the run with an explicit, scannable summary so nothing is silently left behind:
+   - **New branch created:** name the branch you cut and pushed (`feat/<feature-slug>/<NN-slice-slug>`), and that it now exists both locally and on `origin`.
+   - **PR opened:** the title and URL, into `main`.
+   - **Cleanup reminder:** state plainly that this slice left a feature branch behind, and that **once the PR is merged or closed** they should run **`safe-cleanup`** to retire the now-stale local branch (it reports first and confirms before deleting, and records recovery SHAs). This matters for repo hygiene — every slice adds a branch, so they accumulate fast.
+
+   Surface this every time you open a PR, even mid-pipeline under `tdd-harness` — a one-time reminder at the end of a multi-slice session is easy to miss. Keep it short, but never skip the branch name or the cleanup nudge.
 
 ## Safety rules (non-negotiable)
 
