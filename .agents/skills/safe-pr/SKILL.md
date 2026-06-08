@@ -13,7 +13,7 @@ The harness builds **web and non-web** apps, so evidence comes in two shapes:
 
 Bundled resources:
 - `assets/pr-body-template.md` — the PR description structure (with an `<!-- EVIDENCE -->` marker the script fills).
-- `scripts/collect-evidence.mjs` — collects evidence into the committed evidence folder and generates the PR body. For web slices it embeds screenshots and links the recording/report; for non-web slices (`--type cli|api|service` with `--transcript`) it embeds the transcripts as code blocks. Modality is auto-detected (Playwright artifacts → web) or forced with `--type`. Run with Node.
+- `scripts/collect-evidence.mjs` — collects evidence into the committed evidence folder and generates the PR body. For web slices it embeds screenshots and links the recording/report; for non-web slices (`--type cli|api|service` with `--transcript`) it embeds the transcripts as code blocks. Modality is auto-detected (Playwright artifacts → web) or forced with `--type`. It runs in two phases — `--copy-only` (copy + secret-scan) before you commit the evidence, then `--body-only` (build the body, pinned to the evidence commit) after — so embedded links resolve. It auto-detects repo visibility and, on **private** repos, renders screenshots as clickable blob links rather than inline images that wouldn't render. Run with Node.
 
 > Requires the GitHub CLI (`gh`) authenticated, and a GitHub remote. Confirm both early (`gh auth status`, `git remote -v`).
 
@@ -32,34 +32,40 @@ Bundled resources:
 
    Run tests from the slice's **project directory** if the app lives in a subfolder (see the plan's *Project directory* field).
 
-2. **Collect & render.** Run the evidence collector from the repo root. It is plain Node, so the **same single-line invocation works on Windows, macOS, and Linux**. Pick the form for the slice:
+2. **Copy the evidence in (`--copy-only`).** Run the collector from the repo root in copy-only mode — it copies the artifacts into `docs/tdd-evidence/<feature>/<NN-slice>/` and scans them for secrets, but does **not** write the PR body yet. (Two phases matter: the body pins URLs to the current commit, so the evidence must be committed *before* the body is generated — otherwise the links point at a commit that doesn't contain the files. See step 5.) Plain Node, so the same invocation works on Windows/macOS/Linux:
 
-   **Web slice** (auto-detects the Playwright artifacts):
+   **Web slice** — point `--report-dir`/`--results-dir` at the project dir if the app is in a subfolder (the collector resolves them from the repo root):
 
    ```
-   node "${CLAUDE_SKILL_DIR}/scripts/collect-evidence.mjs" --feature <feature-slug> --slice <NN-slice-slug> --template "${CLAUDE_SKILL_DIR}/assets/pr-body-template.md" --out PR_BODY.md
+   node "${CLAUDE_SKILL_DIR}/scripts/collect-evidence.mjs" --feature <feature-slug> --slice <NN-slice-slug> --report-dir <project-dir>/playwright-report --results-dir <project-dir>/test-results --copy-only
    ```
 
    **Non-web slice** (`--type cli|api|service`, one or more `--transcript`):
 
    ```
-   node "${CLAUDE_SKILL_DIR}/scripts/collect-evidence.mjs" --feature <feature-slug> --slice <NN-slice-slug> --type cli --transcript test-run.txt --transcript cli-demo.txt --template "${CLAUDE_SKILL_DIR}/assets/pr-body-template.md" --out PR_BODY.md
+   node "${CLAUDE_SKILL_DIR}/scripts/collect-evidence.mjs" --feature <feature-slug> --slice <NN-slice-slug> --type cli --transcript test-run.txt --transcript cli-demo.txt --copy-only
    ```
 
-   It copies the artifacts into `docs/tdd-evidence/<feature>/<NN-slice>/` and writes `PR_BODY.md`. For web it embeds screenshots (pinned to the commit SHA so they survive branch deletion) and links the report/recording; for non-web it embeds each transcript as a fenced code block (capped with `--max-transcript-lines`, default 200) and links the full file. It scans every copied text artifact for likely secrets. By default it omits raw traces and HAR files (which often carry auth tokens); pass `--include-traces` only if you need them and have checked them.
+   By default it drops raw traces (`*.zip`) and HAR files (which often carry auth tokens); pass `--include-traces` only if you need them and have checked them.
 
-3. **Review the evidence for secrets — BEFORE committing anything.** Read the collector's output: if it reports `SECRETS SUSPECTED`, open the named files and remove or redact any tokens, cookies, passwords, or env dumps (Playwright traces, HAR captures, and HTML reports are the usual culprits). This evidence is about to be committed and pushed to a possibly public branch and **cannot be un-published once in history**. Do not proceed until it is clean. Add `test-results/` and `playwright-report/` to `.gitignore` so stray local artifacts aren't committed by accident.
+3. **Review the evidence for secrets — BEFORE committing anything.** Read the collector's output: if it reports `SECRETS SUSPECTED`, open the named files and remove or redact any tokens, cookies, passwords, or env dumps (Playwright traces, HAR captures, and HTML reports are the usual culprits). This evidence is about to be committed and pushed and **cannot be un-published once in history**. Do not proceed until it is clean. Keep the project's raw `test-results/` and `playwright-report/` out of git via `.gitignore` — but **anchor those patterns to the project dir** (e.g. `sandbox/web-adder/test-results/`) or add `!docs/tdd-evidence/**`, so the unanchored patterns don't also ignore the committed copies under `docs/tdd-evidence/` (a silent-empty-evidence trap).
 
-4. **Finish the PR body.** Open `PR_BODY.md` and fill the remaining sections from the slice plan: the feature/slice description, what changed and why, how to review, the unit-test summary you captured, risk/rollout notes, and the plan path. Tick the reviewer-checklist items that hold. Keep it honest — if something is partial or deferred, say so.
-
-5. **Commit the cleaned evidence and PR body.** Two statements (Windows PowerShell does not support `&&`):
+4. **Commit the cleaned evidence.** Two statements (Windows PowerShell does not support `&&`):
 
    ```
    git add docs/tdd-evidence/<feature>/<NN-slice>/
    git commit -m "docs(<feature>): test evidence [slice NN]"
    ```
 
-   The committed screenshots are what make the embedded images render in the PR.
+   Confirm it actually committed (`git show --stat HEAD`) — if the folder is empty, your `.gitignore` swallowed it (step 3).
+
+5. **Generate the PR body (`--body-only`), now pinned to the evidence commit.** Re-run the collector in body-only mode — it does not re-copy; it builds `PR_BODY.md` from the committed evidence, pinning every link to the current `HEAD` (the commit you just made), so the links resolve:
+
+   ```
+   node "${CLAUDE_SKILL_DIR}/scripts/collect-evidence.mjs" --feature <feature-slug> --slice <NN-slice-slug> [--type cli] --body-only --template "${CLAUDE_SKILL_DIR}/assets/pr-body-template.md" --out PR_BODY.md
+   ```
+
+   For a **web** slice it embeds screenshots and links the recording/report; for a **non-web** slice it embeds each transcript as a fenced code block (capped via `--max-transcript-lines`, default 200) and links the full file. **Private repos:** the collector auto-detects visibility (`gh repo view`) and, on a private repo, renders screenshots as clickable **blob links** instead of inline `![]()` embeds — because `raw.githubusercontent.com` doesn't render for private repos. Override with `--public`/`--private` if detection is wrong. Then open `PR_BODY.md` and fill the remaining `<placeholders>` from the slice plan (description, what changed, how to review, the unit-test summary, risk notes, plan path); tick the checklist items that hold; be honest about anything partial. The PR body itself is git-ignored (regenerable), so it isn't committed.
 
 6. **Confirm, then push.** Show the user the PR title, the body, and the branch you will push, and **get explicit confirmation** (this is outward-facing). Then push:
 
