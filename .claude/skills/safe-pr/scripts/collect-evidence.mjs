@@ -3,39 +3,52 @@
  * collect-evidence.mjs — gather test evidence into a committed evidence folder and render a
  * Markdown evidence block for a TDD-harness pull request.
  *
- * Two modalities — the harness builds web apps AND non-web apps (CLI / HTTP API / service):
- *   • web     — Playwright artifacts: screenshots embedded, recordings/report/traces linked.
- *   • generic — terminal transcripts (the test-run output + a real endpoint invocation such as
- *               CLI stdout or an HTTP request/response) copied in and embedded as fenced code
- *               blocks. No browser required.
+ * Two modalities — the harness builds web and non-web apps:
+ *   • web     — Playwright artifacts: screenshots + recordings/report.
+ *   • generic — terminal transcripts (test-run output + a real endpoint invocation) embedded
+ *               as fenced code blocks. No browser required.
  *
- * The modality is auto-detected (Playwright artifacts present → web; otherwise, if transcripts
- * are supplied → generic) and can be forced with --type web|cli|api|service|generic.
+ * The modality is auto-detected (Playwright artifacts present → web; otherwise transcripts → generic)
+ * and can be forced with --type web|cli|api|service|generic.
+ *
+ * PRIVATE vs PUBLIC repos:
+ *   Inline image embeds (`![](raw.githubusercontent.com/...)`) only render on PUBLIC repos —
+ *   raw.githubusercontent 404s for private repos and GitHub won't proxy them. So:
+ *     • public  → screenshots embedded inline.
+ *     • private → screenshots shown as clickable blob links (render in GitHub's file viewer for
+ *                 signed-in reviewers) plus a note; the CI artifact still has the originals.
+ *   Visibility is auto-detected via `gh repo view --json isPrivate`; override with --public/--private.
+ *
+ * TWO-PHASE USE (so embedded URLs point at the commit that actually contains the evidence):
+ *   The collector pins URLs to the CURRENT commit. Run it in two phases around the evidence commit:
+ *     1) --copy-only : copy artifacts into docs/tdd-evidence/, scan for secrets. No body written.
+ *        (then `git add` + commit the evidence)
+ *     2) --body-only : regenerate the PR body from the committed evidence, pinned to the new HEAD.
+ *   Running with neither flag does copy+body in one shot (back-compat; URLs will pin to the
+ *   pre-evidence commit, so prefer the two-phase flow when embedding web screenshots).
  *
  * Cross-platform (Windows/macOS/Linux). Requires Node 18+ and a git repo.
  *
- * Usage (web):
+ * Usage (web, two-phase):
  *   node collect-evidence.mjs --feature <slug> --slice <NN-slug> \
- *        [--report-dir playwright-report] [--results-dir test-results] \
- *        [--template path/to/pr-body-template.md] [--out PR_BODY.md] \
- *        [--max-screenshots 12] [--include-traces] [--force]
+ *        --report-dir <dir>/playwright-report --results-dir <dir>/test-results --copy-only
+ *   # commit the evidence, then:
+ *   node collect-evidence.mjs --feature <slug> --slice <NN-slug> --body-only \
+ *        --template path/to/pr-body-template.md --out PR_BODY.md
  *
- * Usage (non-web — pass one or more captured transcripts; --transcript is repeatable):
+ * Usage (non-web, two-phase):
  *   node collect-evidence.mjs --feature <slug> --slice <NN-slug> --type cli \
- *        --transcript test-run.txt --transcript cli-demo.txt \
- *        [--transcript-dir some/dir] [--max-transcript-lines 200] \
- *        [--template path/to/pr-body-template.md] [--out PR_BODY.md] [--force]
- *
- * A web slice may also pass --transcript to attach extra command output alongside the screenshots.
+ *        --transcript test-run.txt --transcript cli-demo.txt --copy-only
+ *   # commit the evidence, then:
+ *   node collect-evidence.mjs --feature <slug> --slice <NN-slug> --type cli --body-only \
+ *        --template path/to/pr-body-template.md --out PR_BODY.md
  *
  * Safety:
- *   - By default RAW traces (*.zip) and HAR captures (*.har) are NOT copied into the committed
- *     evidence (they routinely contain auth tokens / cookies). Opt in with --include-traces.
- *   - Copied text artifacts (including transcripts) are scanned for likely secrets; if any match,
- *     the script prints a loud "SECRETS SUSPECTED" report so the human reviews BEFORE committing.
- *     It never echoes the matched secret value, only the file and which pattern matched.
- *   - Inline image URLs are pinned to the current commit SHA (via raw.githubusercontent.com) so
- *     they keep rendering even after the branch is deleted on merge.
+ *   - RAW traces (*.zip) and HAR captures (*.har) are dropped from the committed evidence by
+ *     default (they routinely carry auth tokens / cookies). Opt in with --include-traces.
+ *   - Copied text artifacts (transcripts included) are scanned for likely secrets; a match prints
+ *     a loud "SECRETS SUSPECTED" report (file + pattern only, never the value) so the human reviews
+ *     BEFORE committing.
  *   - --out is never silently clobbered: if the target exists, output goes to <name>.generated.md
  *     unless --force is given.
  */
@@ -88,6 +101,15 @@ function parseRepo(remoteUrl) {
   return { owner: m[1], repo: m[2] };
 }
 
+/** Ask gh whether the repo is private. Returns null if gh/visibility is unavailable. */
+function detectPrivate(repo) {
+  if (!repo) return null;
+  const out = sh(`gh repo view ${repo.owner}/${repo.repo} --json isPrivate -q .isPrivate`);
+  if (out === 'true') return true;
+  if (out === 'false') return false;
+  return null; // gh missing / not authed / unknown
+}
+
 /** Recursively list files under dir (absolute paths). */
 function walk(dir) {
   const out = [];
@@ -119,6 +141,7 @@ const SECRET_PATTERNS = [
 ];
 
 const TEXT_EXT = /\.(json|har|txt|log|xml|md|yaml|yml|csv|html?)$/i;
+const TRANSCRIPT_EXT = /\.(txt|log|json|md|csv)$/i;
 
 function scanForSecrets(files) {
   const hits = [];
@@ -151,7 +174,14 @@ function main() {
   const maxTranscriptLines = parseInt(args['max-transcript-lines'] || '200', 10);
   const includeTraces = !!args['include-traces'];
   const force = !!args.force;
+  const copyOnly = !!args['copy-only'];
+  const bodyOnly = !!args['body-only'];
   let outFile = (typeof args.out === 'string' && args.out) || 'PR_BODY.md';
+
+  if (copyOnly && bodyOnly) {
+    console.error('ERROR: --copy-only and --body-only are mutually exclusive.');
+    process.exit(1);
+  }
 
   const explicitType = normalizeType(args.type);
   const transcriptInputs = asList(args.transcript);
@@ -160,171 +190,179 @@ function main() {
   const repoRoot = sh('git rev-parse --show-toplevel') || process.cwd();
   const branch = sh('git rev-parse --abbrev-ref HEAD');
   const sha = sh('git rev-parse HEAD');
-  const ref = sha || branch; // pin image URLs to the commit so they survive branch deletion
+  const ref = sha || branch; // pin URLs to the commit so they survive branch deletion
   const remote = sh('git remote get-url origin');
   const repo = parseRepo(remote);
+
+  // Visibility: explicit override wins, else ask gh, else assume public (inline embeds, today's default).
+  const isPrivate = args.private ? true : args.public ? false : (detectPrivate(repo) === true);
 
   if (!branch || branch === 'HEAD') {
     console.warn('WARN: detached HEAD or no branch — checkout the feature branch before collecting evidence.');
   }
   if (!repo) {
-    if (remote) console.warn('WARN: origin is not a github.com remote (GitHub Enterprise hosts are not auto-detected) — images will use repo-relative paths and may not render in the PR description.');
-    else console.warn('WARN: no origin remote — images will use repo-relative paths until the branch is pushed to GitHub.');
+    if (remote) console.warn('WARN: origin is not a github.com remote (GitHub Enterprise hosts are not auto-detected) — links will use repo-relative paths and may not render in the PR.');
+    else console.warn('WARN: no origin remote — links will use repo-relative paths until the branch is pushed to GitHub.');
   }
 
   const destRel = path.join('docs', 'tdd-evidence', feature, slice);
   const destAbs = path.join(repoRoot, destRel);
   fs.mkdirSync(destAbs, { recursive: true });
 
-  // Decide modality. Playwright artifacts win; otherwise transcripts mean a non-web slice.
+  // Decide modality (uses the resolved report/results dirs).
   const reportAbs = path.isAbsolute(reportDir) ? reportDir : path.join(repoRoot, reportDir);
   const resultsAbs = path.isAbsolute(resultsDir) ? resultsDir : path.join(repoRoot, resultsDir);
-  const hasPwArtifacts = fs.existsSync(reportAbs) || fs.existsSync(resultsAbs);
+  const sourceHasPw = fs.existsSync(reportAbs) || fs.existsSync(resultsAbs);
+  const destHasPw = fs.existsSync(path.join(destAbs, 'playwright-report')) || fs.existsSync(path.join(destAbs, 'test-results'));
+  const hasPwArtifacts = sourceHasPw || destHasPw;
   const type = explicitType
-    || (hasPwArtifacts ? 'web' : ((transcriptInputs.length || transcriptDir) ? 'generic' : 'web'));
+    || (hasPwArtifacts ? 'web' : ((transcriptInputs.length || transcriptDir || hasTopLevelTranscripts(destAbs)) ? 'generic' : 'web'));
 
-  // Copy Playwright report + results into the committed evidence folder (if present).
-  const copied = [];
-  for (const [srcAbs, name] of [[reportAbs, 'playwright-report'], [resultsAbs, 'test-results']]) {
-    if (fs.existsSync(srcAbs)) {
-      fs.cpSync(srcAbs, path.join(destAbs, name), { recursive: true });
-      copied.push(name);
+  // ---- COPY PHASE (skipped in --body-only) ----
+  if (!bodyOnly) {
+    const copied = [];
+    for (const [srcAbs, name] of [[reportAbs, 'playwright-report'], [resultsAbs, 'test-results']]) {
+      if (fs.existsSync(srcAbs)) {
+        fs.cpSync(srcAbs, path.join(destAbs, name), { recursive: true });
+        copied.push(name);
+      }
+    }
+    if (type === 'web' && copied.length === 0 && !destHasPw) {
+      console.warn(`WARN: neither "${reportDir}" nor "${resultsDir}" exist. Run the Playwright suite first (or pass --type cli/api with --transcript for a non-web slice).`);
+    }
+
+    // Copy transcripts (non-web evidence, or extra command output for a web slice).
+    const addTranscript = (srcAbs) => {
+      if (!fs.existsSync(srcAbs)) { console.warn(`WARN: transcript not found, skipping: ${srcAbs}`); return; }
+      if (fs.statSync(srcAbs).isDirectory()) return;
+      const dst = path.join(destAbs, path.basename(srcAbs));
+      if (path.resolve(srcAbs) !== path.resolve(dst)) fs.cpSync(srcAbs, dst);
+    };
+    for (const t of transcriptInputs) addTranscript(path.isAbsolute(t) ? t : path.join(process.cwd(), t));
+    if (transcriptDir) {
+      const dirAbs = path.isAbsolute(transcriptDir) ? transcriptDir : path.join(process.cwd(), transcriptDir);
+      for (const f of walk(dirAbs)) addTranscript(f);
+    }
+
+    // Drop raw traces (.zip) and HAR captures (.har) from the committed copy unless asked to keep them.
+    if (!includeTraces) {
+      for (const f of walk(destAbs)) {
+        if (/\.(zip|har)$/i.test(f)) { fs.rmSync(f, { force: true }); }
+      }
     }
   }
-  if (type === 'web' && copied.length === 0) {
-    console.warn(`WARN: neither "${reportDir}" nor "${resultsDir}" exist. Run the Playwright suite first so there are artifacts to collect (or pass --type cli/api with --transcript for a non-web slice).`);
-  }
 
-  // Copy transcripts (non-web evidence, or extra command output for a web slice).
-  const transcriptFiles = [];
-  const addTranscript = (srcAbs) => {
-    if (!fs.existsSync(srcAbs)) { console.warn(`WARN: transcript not found, skipping: ${srcAbs}`); return; }
-    if (fs.statSync(srcAbs).isDirectory()) return;
-    const dest = path.join(destAbs, path.basename(srcAbs));
-    if (path.resolve(srcAbs) !== path.resolve(dest)) fs.cpSync(srcAbs, dest);
-    if (!transcriptFiles.includes(dest)) transcriptFiles.push(dest);
-  };
-  for (const t of transcriptInputs) addTranscript(path.isAbsolute(t) ? t : path.join(process.cwd(), t));
-  if (transcriptDir) {
-    const dirAbs = path.isAbsolute(transcriptDir) ? transcriptDir : path.join(process.cwd(), transcriptDir);
-    for (const f of walk(dirAbs)) addTranscript(f);
-  }
-  transcriptFiles.sort();
-
-  // Safety: by default drop raw traces (.zip) and HAR captures (.har) from the committed copy.
-  let droppedSensitive = 0;
-  if (!includeTraces) {
-    for (const f of walk(destAbs)) {
-      if (/\.(zip|har)$/i.test(f)) { fs.rmSync(f, { force: true }); droppedSensitive++; }
-    }
-  }
-
-  // Classify remaining artifacts.
+  // ---- CLASSIFY (always, from the committed evidence folder) ----
   const files = walk(destAbs);
   const screenshots = files.filter(f => /\.(png|jpe?g)$/i.test(f)).sort();
   const videos = files.filter(f => /\.(webm|mp4)$/i.test(f)).sort();
   const isTrace = f => /\.zip$/i.test(f) && /(^|[\\/])trace[^\\/]*\.zip$/i.test(f);
   const traces = files.filter(isTrace).sort();
   const reportIndex = files.find(f => /playwright-report[\\/].*index\.html$/i.test(f));
+  // Transcripts = top-level text files in the evidence folder (that's where the copy phase puts them).
+  const transcriptFiles = topLevelTranscripts(destAbs);
+  const droppedSensitive = files.filter(f => /\.(zip|har)$/i.test(f) && !isTrace(f)).length; // informational only
 
-  // Secret scan over the committed text artifacts (transcripts included).
   const secretHits = scanForSecrets(files);
 
   const rawUrl = (rel) => repo && ref ? `https://raw.githubusercontent.com/${repo.owner}/${repo.repo}/${ref}/${rel}` : rel;
   const blobUrl = (rel) => repo && ref ? `https://github.com/${repo.owner}/${repo.repo}/blob/${ref}/${rel}` : rel;
 
-  // Build the Markdown evidence block.
-  const lines = [];
+  // ---- BODY PHASE (skipped in --copy-only) ----
+  if (!copyOnly) {
+    const lines = [];
 
-  if (type === 'web') {
-    lines.push('### Visual evidence', '');
-    if (screenshots.length === 0) {
-      lines.push("_No screenshots found. Add `await page.screenshot(...)` at the decisive assertion in the acceptance spec, or set `screenshot: 'on'` in playwright.config._");
-    } else {
-      for (const s of screenshots.slice(0, maxShots)) {
-        const rel = toRepoUrlPath(s, repoRoot);
-        const label = path.basename(s);
-        lines.push(`**${label}**`, '', `![${label}](${rawUrl(rel)})`, '');
+    if (type === 'web') {
+      lines.push('### Visual evidence', '');
+      if (screenshots.length === 0) {
+        lines.push("_No screenshots found. Add `await page.screenshot(...)` at the decisive assertion, or set `screenshot: 'on'` in playwright.config._");
+      } else if (isPrivate) {
+        lines.push('> ℹ️ This repo is **private**, so inline image previews don\'t render in the PR (raw.githubusercontent requires public access). The screenshots are committed — click to open them in GitHub\'s file viewer (signed in), and they\'re also in the e2e CI artifact.', '');
+        for (const s of screenshots.slice(0, maxShots)) {
+          lines.push(`- 📷 [${path.basename(s)}](${blobUrl(toRepoUrlPath(s, repoRoot))})`);
+        }
+        lines.push('');
+      } else {
+        for (const s of screenshots.slice(0, maxShots)) {
+          const rel = toRepoUrlPath(s, repoRoot);
+          const label = path.basename(s);
+          lines.push(`**${label}**`, '', `![${label}](${rawUrl(rel)})`, '');
+        }
       }
       if (screenshots.length > maxShots) {
         lines.push(`_…and ${screenshots.length - maxShots} more screenshot(s) in \`${destRel.split(path.sep).join('/')}/\`._`, '');
       }
-    }
 
-    lines.push('### Recordings', '');
-    if (videos.length) {
-      lines.push('_Click to download and view the recording of the run:_', '');
-      for (const v of videos) lines.push(`- [${path.basename(v)}](${blobUrl(toRepoUrlPath(v, repoRoot))})`);
+      lines.push('### Recordings', '');
+      if (videos.length) {
+        lines.push('_Click to download and view the recording of the run:_', '');
+        for (const v of videos) lines.push(`- [${path.basename(v)}](${blobUrl(toRepoUrlPath(v, repoRoot))})`);
+        lines.push('');
+      } else {
+        lines.push('> ⚠️ **No recording was captured.** A web slice requires a video of the passing acceptance run. Set `video: \'on\'`, re-run the e2e suite, and re-collect.', '');
+      }
+
+      lines.push('### Reports & traces', '');
+      if (reportIndex) {
+        const rel = toRepoUrlPath(reportIndex, repoRoot);
+        lines.push(`- Playwright HTML report: [\`${rel}\`](${blobUrl(rel)}) (also uploaded as a CI artifact — open locally with \`npx playwright show-report\`).`);
+      }
+      for (const t of traces) {
+        const rel = toRepoUrlPath(t, repoRoot);
+        lines.push(`- Trace: [${path.basename(t)}](${blobUrl(rel)}) — open with \`npx playwright show-trace <file>\`.`);
+      }
       lines.push('');
-    } else {
-      lines.push('> ⚠️ **No recording was captured.** A web slice requires a video of the passing acceptance run. Set `video: \'on\'` for the acceptance project, re-run the e2e suite, and re-collect.', '');
     }
 
-    lines.push('### Reports & traces', '');
-    if (reportIndex) {
-      const rel = toRepoUrlPath(reportIndex, repoRoot);
-      lines.push(`- Playwright HTML report: [\`${rel}\`](${blobUrl(rel)}) (also uploaded as a CI artifact — open locally with \`npx playwright show-report\`).`);
+    // Transcripts — primary evidence for non-web slices; supplementary for web.
+    if (transcriptFiles.length) {
+      lines.push('### Test output (transcripts)', '');
+      for (const tf of transcriptFiles) {
+        const rel = toRepoUrlPath(tf, repoRoot);
+        const label = path.basename(tf);
+        let content = '';
+        try { content = fs.readFileSync(tf, 'utf8'); } catch { /* unreadable */ }
+        const allLines = content.replace(/\s+$/, '').split(/\r?\n/);
+        const shown = allLines.slice(0, maxTranscriptLines);
+        const truncated = allLines.length > maxTranscriptLines;
+        const fence = content.includes('```') ? '~~~' : '```';
+        const lang = /\.json$/i.test(tf) ? 'json' : '';
+        lines.push(`**${label}**`, '');
+        lines.push(fence + lang, ...shown, fence, '');
+        if (truncated) lines.push(`_…truncated to ${maxTranscriptLines} lines; full transcript (${allLines.length} lines): [\`${rel}\`](${blobUrl(rel)})._`, '');
+        else lines.push(`Full transcript: [\`${rel}\`](${blobUrl(rel)})`, '');
+      }
+    } else if (type !== 'web') {
+      lines.push('### Test output (transcripts)', '');
+      lines.push('> ⚠️ **No transcript captured.** For a non-web slice, capture the test-run output AND a real endpoint invocation to files and pass them with `--transcript <file>` (repeatable).', '');
     }
-    for (const t of traces) {
-      const rel = toRepoUrlPath(t, repoRoot);
-      lines.push(`- Trace: [${path.basename(t)}](${blobUrl(rel)}) — open with \`npx playwright show-trace <file>\`.`);
+
+    lines.push(`_All evidence committed under \`${destRel.split(path.sep).join('/')}/\`._`, '');
+
+    const block = lines.join('\n');
+
+    const template = typeof args.template === 'string' ? args.template : null;
+    if (template && fs.existsSync(template)) {
+      let body = fs.readFileSync(template, 'utf8');
+      body = body.includes('<!-- EVIDENCE -->') ? body.replace('<!-- EVIDENCE -->', block) : body + '\n\n' + block;
+      if (fs.existsSync(outFile) && !force) {
+        outFile = outFile.replace(/\.md$/i, '') + '.generated.md';
+        console.warn(`WARN: target PR body already exists — wrote to ${outFile} instead (use --force to overwrite).`);
+      }
+      fs.writeFileSync(outFile, body, 'utf8');
+      console.log(`Wrote PR body with evidence to ${outFile}`);
+    } else if (args.out) {
+      if (fs.existsSync(outFile) && !force) {
+        outFile = outFile.replace(/\.md$/i, '') + '.generated.md';
+        console.warn(`WARN: target already exists — wrote evidence block to ${outFile} instead (use --force to overwrite).`);
+      }
+      fs.writeFileSync(outFile, block, 'utf8');
+      console.log(`Wrote evidence block to ${outFile}`);
     }
-    if (!includeTraces && droppedSensitive > 0) {
-      lines.push(`- _(${droppedSensitive} trace/HAR file(s) omitted from evidence for safety; re-run with \`--include-traces\` after checking them for secrets.)_`);
-    }
-    lines.push('');
+
+    console.log('\n----- EVIDENCE BLOCK -----\n');
+    console.log(block);
   }
-
-  // Transcripts — the primary evidence for non-web slices; supplementary for web.
-  if (transcriptFiles.length) {
-    lines.push('### Test output (transcripts)', '');
-    for (const tf of transcriptFiles) {
-      const rel = toRepoUrlPath(tf, repoRoot);
-      const label = path.basename(tf);
-      let content = '';
-      try { content = fs.readFileSync(tf, 'utf8'); } catch { /* binary or unreadable */ }
-      const allLines = content.replace(/\s+$/, '').split(/\r?\n/);
-      const shown = allLines.slice(0, maxTranscriptLines);
-      const truncated = allLines.length > maxTranscriptLines;
-      const fence = content.includes('```') ? '~~~' : '```'; // avoid breaking out of the code fence
-      const lang = /\.json$/i.test(tf) ? 'json' : '';
-      lines.push(`**${label}**`, '');
-      lines.push(fence + lang, ...shown, fence, '');
-      if (truncated) lines.push(`_…truncated to ${maxTranscriptLines} lines; full transcript (${allLines.length} lines): [\`${rel}\`](${blobUrl(rel)})._`, '');
-      else lines.push(`Full transcript: [\`${rel}\`](${blobUrl(rel)})`, '');
-    }
-  } else if (type !== 'web') {
-    lines.push('### Test output (transcripts)', '');
-    lines.push('> ⚠️ **No transcript captured.** For a non-web slice, capture the test-run output AND a real endpoint invocation (CLI stdout / HTTP request+response) to files and pass them with `--transcript <file>` (repeatable).', '');
-  }
-
-  lines.push(`_All evidence committed under \`${destRel.split(path.sep).join('/')}/\`._`, '');
-
-  const block = lines.join('\n');
-
-  // Emit to file (never silently clobber).
-  const template = typeof args.template === 'string' ? args.template : null;
-  if (template && fs.existsSync(template)) {
-    let body = fs.readFileSync(template, 'utf8');
-    body = body.includes('<!-- EVIDENCE -->') ? body.replace('<!-- EVIDENCE -->', block) : body + '\n\n' + block;
-    if (fs.existsSync(outFile) && !force) {
-      outFile = outFile.replace(/\.md$/i, '') + '.generated.md';
-      console.warn(`WARN: target PR body already exists — wrote to ${outFile} instead (use --force to overwrite).`);
-    }
-    fs.writeFileSync(outFile, body, 'utf8');
-    console.log(`Wrote PR body with evidence to ${outFile}`);
-  } else if (args.out) {
-    if (fs.existsSync(outFile) && !force) {
-      outFile = outFile.replace(/\.md$/i, '') + '.generated.md';
-      console.warn(`WARN: target already exists — wrote evidence block to ${outFile} instead (use --force to overwrite).`);
-    }
-    fs.writeFileSync(outFile, block, 'utf8');
-    console.log(`Wrote evidence block to ${outFile}`);
-  }
-
-  // Print the block + a summary to stdout.
-  console.log('\n----- EVIDENCE BLOCK -----\n');
-  console.log(block);
 
   // Loud secret report — the safe-pr skill keys off the "SECRETS SUSPECTED" token.
   if (secretHits.length) {
@@ -335,7 +373,9 @@ function main() {
   }
 
   console.log('\n----- SUMMARY -----');
+  console.log(`phase           : ${copyOnly ? 'copy-only' : bodyOnly ? 'body-only' : 'copy+body (single-shot)'}`);
   console.log(`modality        : ${type}${explicitType ? ' (forced)' : ' (auto-detected)'}`);
+  console.log(`repo visibility : ${isPrivate ? 'private (screenshots shown as blob links)' : 'public (screenshots embedded inline)'}`);
   console.log(`evidence folder : ${destRel.split(path.sep).join('/')}/`);
   if (type === 'web') {
     console.log(`screenshots     : ${screenshots.length}`);
@@ -344,12 +384,27 @@ function main() {
   }
   console.log(`transcripts     : ${transcriptFiles.length}${type !== 'web' && transcriptFiles.length === 0 ? '  <-- WARNING: a non-web slice needs at least one transcript' : ''}`);
   console.log(`secrets         : ${secretHits.length ? secretHits.length + ' SUSPECTED — see report above' : 'none detected (still skim the evidence)'}`);
-  console.log(`branch          : ${branch || '(unknown)'}`);
   console.log(`commit          : ${sha ? sha.slice(0, 12) : '(unknown)'}`);
   console.log(`repo            : ${repo ? repo.owner + '/' + repo.repo : '(no github.com remote)'}`);
-  if (!repo || !branch || branch === 'HEAD') {
-    console.log('note            : push the feature branch to GitHub so embedded image/file URLs resolve.');
+  if (copyOnly) {
+    console.log('next            : git add the evidence folder, commit it, then re-run with --body-only to pin URLs to that commit.');
   }
+  if (!repo || !branch || branch === 'HEAD') {
+    console.log('note            : push the feature branch to GitHub so committed-file URLs resolve.');
+  }
+}
+
+/** Top-level (depth-1) text files in the evidence folder — these are the copied transcripts. */
+function topLevelTranscripts(destAbs) {
+  if (!fs.existsSync(destAbs)) return [];
+  return fs.readdirSync(destAbs, { withFileTypes: true })
+    .filter(e => e.isFile() && TRANSCRIPT_EXT.test(e.name))
+    .map(e => path.join(destAbs, e.name))
+    .sort();
+}
+
+function hasTopLevelTranscripts(destAbs) {
+  return topLevelTranscripts(destAbs).length > 0;
 }
 
 main();
