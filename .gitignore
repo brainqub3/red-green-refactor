@@ -15,3 +15,9 @@ PR_BODY.generated.md
 
 # safe-cleanup recovery log (local record of deleted branch SHAs)
 .tdd-branch-cleanup.log
+
+# Vendored third-party dev skill — kept local only, not part of the published harness.
+# skill-creator (from anthropics/skills) is used locally to author this repo's skills.
+.agents/skills/skill-creator/
+# skills-lock.json only records the local skill-creator install, so keep it local too.
+skills-lock.json
