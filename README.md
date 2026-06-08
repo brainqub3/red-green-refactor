@@ -4,6 +4,9 @@ An **enterprise-grade Red-Green-Refactor TDD harness** for Claude Code, implemen
 
 > Built for Claude Code first. The skills live in `.claude/skills/` (loaded automatically by this Claude Code project) and are mirrored to `.agents/skills/` as a portable, publishable copy.
 
+> [!WARNING]
+> **Turn on branch protection for `main` before you use this harness.** The harness interacts with GitHub directly — `safe-pr` pushes feature branches and opens pull requests **into `main`**, and you'll often merge them. It is deliberately cautious (it confirms before pushing, never force-pushes, and only targets `main`), but a [protected default branch](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches) is your safety net: require pull requests before merging, require the CI status checks from `tdd-ci` to pass, and disallow direct pushes to `main`. That way nothing reaches `main` unreviewed or red — exactly the discipline this harness exists to enforce. See `tdd-ci`'s [`references/github-actions-guide.md`](.claude/skills/tdd-ci/references/github-actions-guide.md) ("Branch protection") for a ready-to-use `gh api` setup.
+
 ## Why
 
 Test-Driven Development is a **design discipline**, not a testing afterthought. This harness encodes the discipline so it is followed *literally* — every production change is driven by a failing test, you watch each test fail for the right reason, you make it pass with the minimum code, and you refactor only on green. Work proceeds in thin **vertical slices** (the smallest end-to-end testable behaviour), each shipped as its own small, evidence-backed PR.
